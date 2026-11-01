@@ -1,4 +1,4 @@
-const { existsSync } = require('node:fs')
+const { existsSync, readFileSync, statSync } = require('node:fs')
 const { join } = require('node:path')
 
 // Node >= 20.12 reads .env natively (process.loadEnvFile), so dotenv is not a
@@ -27,13 +27,46 @@ function databasesFromEnv() {
   return databases
 }
 
+// The binary must match this machine's format. Running a macOS (Mach-O) build on
+// Linux makes the shell fall back to interpreting the binary as a script, which
+// surfaces as 'Syntax error: "(" unexpected'. Fail here with an actionable
+// message instead of letting PM2 crash-loop.
+const BINARY_MAGIC = {
+  linux: ['7f454c46'], // ELF
+  darwin: ['cffaedfe', 'cefaedfe', 'feedface', 'feedfacf'], // Mach-O
+  win32: ['4d5a'], // MZ
+}
+
+function assertRunnableBinary(binary) {
+  if (!existsSync(binary)) {
+    throw new Error(
+      `${binary} is missing. Build it first: go build -o sqliter .  (or run ./deploy.sh)`
+    )
+  }
+
+  const magic = readFileSync(binary).subarray(0, 4).toString('hex')
+  const expected = BINARY_MAGIC[process.platform]
+  if (expected && !expected.includes(magic)) {
+    throw new Error(
+      `${binary} is not a ${process.platform} executable (magic ${magic}). ` +
+        'It was built for another OS (or committed by mistake) — rebuild it on this machine with ./deploy.sh'
+    )
+  }
+
+  if ((statSync(binary).mode & 0o111) === 0) {
+    throw new Error(`${binary} is not executable. Run: chmod +x sqliter`)
+  }
+}
+
 const port = process.env.PORT || '2826'
+const script = join(__dirname, 'sqliter')
+assertRunnableBinary(script)
 
 module.exports = {
   apps: [
     {
       name: process.env.APP_NAME || 'sqliter',
-      script: './sqliter',
+      script,
       // sqliter is a compiled Go binary, not a Node script.
       interpreter: 'none',
       args: [...databasesFromEnv().flatMap((database) => ['--db', database]), '--port', port],

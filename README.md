@@ -153,6 +153,25 @@ deploy.sh   # git pull, build frontend + binary, back up databases, restart PM2
 The PM2 app launches with `interpreter: 'none'`, since `./sqliter` is a Go binary
 rather than a Node script.
 
+The binary is **not** tracked in git (`.gitignore`), so it is always built on the
+machine that runs it. If the logs show shell noise instead of the app starting, such as
+
+```
+sqliter: 2: Syntax error: "(" unexpected
+sqliter: 1: <garbage>: not found
+```
+
+the shell is trying to *interpret* a non-native executable — usually a macOS build on
+Linux. The PM2 config now checks the binary's magic bytes and fails with a clear error;
+rebuild on the server with `./deploy.sh`.
+
+If an app entry from an older deployment keeps crash-looping, drop it once:
+
+```bash
+pm2 delete sqliter
+./deploy.sh
+```
+
 ## 📖 Usage
 
 Once running, open your browser to `http://localhost:2826` (or whatever port you specified).
