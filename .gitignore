@@ -1,5 +1,4 @@
 .idea
-sqliter
 node_modules/
 dist/
 /web/dev_server.log
