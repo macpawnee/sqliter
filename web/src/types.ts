@@ -37,7 +37,22 @@ export interface DeleteRequest {
 }
 
 export interface DatabaseInfo {
+  name: string;
   filename: string;
+  path: string;
+  default: boolean;
+}
+
+export interface DatabasesResponse {
+  databases: DatabaseInfo[];
+  default: string;
+}
+
+export interface SQLQueryResult {
+  columns: string[];
+  rows: any[][];
+  rowCount: number;
+  rowsAffected?: number;
 }
 
 export interface ColumnFilter {

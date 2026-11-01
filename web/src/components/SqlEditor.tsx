@@ -7,6 +7,7 @@ import 'ace-builds/src-noconflict/theme-cloud_editor_dark';
 import 'ace-builds/src-noconflict/ext-language_tools';
 
 import { useTheme } from '../contexts/ThemeContext';
+import { api } from '../api';
 
 interface SqlEditorProps {
   onRefresh?: () => void;
@@ -52,20 +53,9 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({ onRefresh }) => {
 
     try {
       const startTime = performance.now();
-      const response = await fetch('/api/sql/execute', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ sql: sql.trim() }),
-      });
+      const data = await api.executeSQL(sql.trim());
 
       const endTime = performance.now();
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Query execution failed');
-      }
 
       setResults({
         columns: data.columns || [],
@@ -82,7 +72,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({ onRefresh }) => {
         onRefresh();
       }
     } catch (err: any) {
-      setError(err.message);
+      setError(err?.response?.data?.error || err.message || 'Query execution failed');
     } finally {
       setIsExecuting(false);
     }

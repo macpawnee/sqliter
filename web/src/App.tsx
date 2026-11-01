@@ -4,31 +4,48 @@ import { TableList } from './components/TableList';
 import { TableView } from './components/TableView';
 import { SqlEditor } from './components/SqlEditor';
 import { ThemeToggle } from './components/ThemeToggle';
+import { DatabaseSwitcher } from './components/DatabaseSwitcher';
 import { ThemeProvider } from './contexts/ThemeContext';
-import { api } from './api';
+import { api, setCurrentDatabase } from './api';
 import { Table, DatabaseInfo } from './types';
 
+const DATABASE_STORAGE_KEY = 'sqliter.selectedDatabase';
+
 // Layout component that wraps all pages
-function Layout({ children, tables, databaseInfo, pendingChangesByTable }: {
+function Layout({ children, tables, databaseInfo, pendingChangesByTable, databases, selectedDatabase, onDatabaseChange, switchingDatabase }: {
   children: React.ReactNode;
   tables: Table[];
   databaseInfo: DatabaseInfo | null;
   pendingChangesByTable: Record<string, number>;
+  databases: DatabaseInfo[];
+  selectedDatabase: string;
+  onDatabaseChange: (databaseName: string) => void;
+  switchingDatabase: boolean;
 }) {
   return (
     <div className="h-screen flex flex-col bg-white dark:bg-gray-900 transition-colors">
       <header className="bg-blue-600 dark:bg-gray-700 text-white p-4">
-        <div className="flex justify-between items-start">
+        <div className="flex justify-between items-center gap-4">
           <div>
             <Link to="/" className="hover:opacity-80 transition-opacity">
               <h1 className="text-2xl font-bold flex items-center gap-2 text-white dark:text-gray-200">
                 <i className="ti ti-database"></i>
-                SQLiter{databaseInfo && ` - ${databaseInfo.filename}`}
+                SQLiter
               </h1>
             </Link>
-            <p className="text-blue-100 dark:text-gray-400 text-sm">SQLite Database Editor</p>
+            <p className="text-blue-100 dark:text-gray-400 text-sm truncate max-w-md" title={databaseInfo?.path}>
+              {databaseInfo ? databaseInfo.path : 'SQLite Database Editor'}
+            </p>
           </div>
-          <ThemeToggle />
+          <div className="flex items-center gap-4">
+            <DatabaseSwitcher
+              databases={databases}
+              selected={selectedDatabase}
+              onChange={onDatabaseChange}
+              disabled={switchingDatabase}
+            />
+            <ThemeToggle />
+          </div>
         </div>
       </header>
 
@@ -96,32 +113,74 @@ function SqlEditorPage() {
 }
 
 function App() {
+  const navigate = useNavigate();
+  const [databases, setDatabases] = useState<DatabaseInfo[]>([]);
+  const [selectedDatabase, setSelectedDatabase] = useState('');
   const [tables, setTables] = useState<Table[]>([]);
   const [loading, setLoading] = useState(true);
+  const [switchingDatabase, setSwitchingDatabase] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [databaseInfo, setDatabaseInfo] = useState<DatabaseInfo | null>(null);
   const [pendingChangesByTable, setPendingChangesByTable] = useState<Record<string, number>>({});
 
-  const loadTables = async () => {
+  const loadDatabase = async (databaseName: string) => {
+    setCurrentDatabase(databaseName || null);
+    const [fetchedTables, dbInfo] = await Promise.all([
+      api.getTables(),
+      api.getDatabaseInfo()
+    ]);
+    setTables(fetchedTables);
+    setDatabaseInfo(dbInfo);
+    setError(null);
+  };
+
+  const initialize = async () => {
+    setSwitchingDatabase(true);
     try {
-      setLoading(true);
-      const [fetchedTables, dbInfo] = await Promise.all([
-        api.getTables(),
-        api.getDatabaseInfo()
-      ]);
-      setTables(fetchedTables);
-      setDatabaseInfo(dbInfo);
-      setError(null);
+      const response = await api.getDatabases();
+      const stored = localStorage.getItem(DATABASE_STORAGE_KEY);
+      const initialDatabase =
+        response.databases.find(database => database.name === stored)?.name ||
+        response.databases.find(database => database.default)?.name ||
+        response.databases[0]?.name ||
+        '';
+
+      setDatabases(response.databases);
+      setSelectedDatabase(initialDatabase);
+      await loadDatabase(initialDatabase);
     } catch (err) {
-      setError('Failed to load tables');
-      console.error('Error loading tables:', err);
+      setError('Failed to load databases');
+      console.error('Error loading databases:', err);
     } finally {
+      setSwitchingDatabase(false);
       setLoading(false);
     }
   };
 
+  const handleDatabaseChange = async (databaseName: string) => {
+    if (databaseName === selectedDatabase) return;
+
+    setSelectedDatabase(databaseName);
+    localStorage.setItem(DATABASE_STORAGE_KEY, databaseName);
+    setTables([]);
+    setPendingChangesByTable({});
+    setSwitchingDatabase(true);
+
+    // Table names differ between databases, so return to the start page.
+    navigate('/');
+
+    try {
+      await loadDatabase(databaseName);
+    } catch (err) {
+      setError('Failed to load tables');
+      console.error('Error switching database:', err);
+    } finally {
+      setSwitchingDatabase(false);
+    }
+  };
+
   useEffect(() => {
-    loadTables();
+    initialize();
   }, []);
 
   const handlePendingChangesUpdate = (tableName: string, count: number) => {
@@ -145,7 +204,7 @@ function App() {
         <div className="text-center">
           <div className="text-xl text-red-600 dark:text-red-400 mb-4">{error}</div>
           <button
-            onClick={loadTables}
+            onClick={initialize}
             className="px-4 py-2 bg-blue-500 dark:bg-blue-600 text-white rounded hover:bg-blue-600 dark:hover:bg-blue-700 transition-colors"
           >
             Retry
@@ -159,17 +218,41 @@ function App() {
     <ThemeProvider>
       <Routes>
       <Route path="/" element={
-        <Layout tables={tables} databaseInfo={databaseInfo} pendingChangesByTable={pendingChangesByTable}>
+        <Layout
+          tables={tables}
+          databaseInfo={databaseInfo}
+          pendingChangesByTable={pendingChangesByTable}
+          databases={databases}
+          selectedDatabase={selectedDatabase}
+          onDatabaseChange={handleDatabaseChange}
+          switchingDatabase={switchingDatabase}
+        >
           <HomePage />
         </Layout>
       } />
       <Route path="/table/:tableName" element={
-        <Layout tables={tables} databaseInfo={databaseInfo} pendingChangesByTable={pendingChangesByTable}>
+        <Layout
+          tables={tables}
+          databaseInfo={databaseInfo}
+          pendingChangesByTable={pendingChangesByTable}
+          databases={databases}
+          selectedDatabase={selectedDatabase}
+          onDatabaseChange={handleDatabaseChange}
+          switchingDatabase={switchingDatabase}
+        >
           <TablePage />
         </Layout>
       } />
       <Route path="/sql" element={
-        <Layout tables={tables} databaseInfo={databaseInfo} pendingChangesByTable={pendingChangesByTable}>
+        <Layout
+          tables={tables}
+          databaseInfo={databaseInfo}
+          pendingChangesByTable={pendingChangesByTable}
+          databases={databases}
+          selectedDatabase={selectedDatabase}
+          onDatabaseChange={handleDatabaseChange}
+          switchingDatabase={switchingDatabase}
+        >
           <SqlEditorPage />
         </Layout>
       } />

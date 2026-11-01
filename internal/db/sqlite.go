@@ -14,6 +14,7 @@ import (
 type SQLiteDB struct {
 	db       *sql.DB
 	filename string
+	path     string
 }
 
 func NewSQLiteDB(dbPath string) (*SQLiteDB, error) {
@@ -27,11 +28,21 @@ func NewSQLiteDB(dbPath string) (*SQLiteDB, error) {
 	}
 
 	filename := filepath.Base(dbPath)
-	return &SQLiteDB{db: db, filename: filename}, nil
+	return &SQLiteDB{db: db, filename: filename, path: dbPath}, nil
 }
 
 func (s *SQLiteDB) Close() error {
 	return s.db.Close()
+}
+
+// Filename is the base file name of the database.
+func (s *SQLiteDB) Filename() string {
+	return s.filename
+}
+
+// Path is the location the database was opened from.
+func (s *SQLiteDB) Path() string {
+	return s.path
 }
 
 func (s *SQLiteDB) GetTables() ([]models.Table, error) {

@@ -7,14 +7,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"sqliter/internal/db"
 	"sqliter/internal/models"
 	"testing"
+	"testing/fstest"
 
 	_ "github.com/mattn/go-sqlite3"
 )
 
-func setupTestDB(t *testing.T) (*db.SQLiteDB, string) {
+func setupTestDB(t *testing.T) (*db.Manager, string) {
 	tmpfile, err := os.CreateTemp("", "test*.db")
 	if err != nil {
 		t.Fatal(err)
@@ -53,12 +55,16 @@ func setupTestDB(t *testing.T) (*db.SQLiteDB, string) {
 	sqlDB.Close()
 
 	// Open with our wrapper
-	database, err := db.NewSQLiteDB(tmpfile.Name())
+	databases, err := db.NewManager([]string{tmpfile.Name()})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	return database, tmpfile.Name()
+	return databases, tmpfile.Name()
+}
+
+func newTestHandler(databases *db.Manager) *Handler {
+	return NewHandler(databases, fstest.MapFS{})
 }
 
 func TestGetTables(t *testing.T) {
@@ -66,7 +72,7 @@ func TestGetTables(t *testing.T) {
 	defer database.Close()
 	defer os.Remove(dbPath)
 
-	handler := NewHandler(database)
+	handler := newTestHandler(database)
 	router := handler.SetupRoutes()
 
 	w := httptest.NewRecorder()
@@ -106,7 +112,7 @@ func TestGetTableSchema(t *testing.T) {
 	defer database.Close()
 	defer os.Remove(dbPath)
 
-	handler := NewHandler(database)
+	handler := newTestHandler(database)
 	router := handler.SetupRoutes()
 
 	w := httptest.NewRecorder()
@@ -151,7 +157,7 @@ func TestGetTableData(t *testing.T) {
 	defer database.Close()
 	defer os.Remove(dbPath)
 
-	handler := NewHandler(database)
+	handler := newTestHandler(database)
 	router := handler.SetupRoutes()
 
 	w := httptest.NewRecorder()
@@ -188,7 +194,7 @@ func TestInsertRow(t *testing.T) {
 	defer database.Close()
 	defer os.Remove(dbPath)
 
-	handler := NewHandler(database)
+	handler := newTestHandler(database)
 	router := handler.SetupRoutes()
 
 	insertData := models.InsertRequest{
@@ -227,7 +233,7 @@ func TestUpdateRow(t *testing.T) {
 	defer database.Close()
 	defer os.Remove(dbPath)
 
-	handler := NewHandler(database)
+	handler := newTestHandler(database)
 	router := handler.SetupRoutes()
 
 	updateData := models.UpdateRequest{
@@ -273,7 +279,7 @@ func TestDeleteRow(t *testing.T) {
 	defer database.Close()
 	defer os.Remove(dbPath)
 
-	handler := NewHandler(database)
+	handler := newTestHandler(database)
 	router := handler.SetupRoutes()
 
 	deleteData := models.DeleteRequest{
@@ -309,5 +315,159 @@ func TestDeleteRow(t *testing.T) {
 		if int64(row["id"].(float64)) == 2 {
 			t.Error("Row with id=2 should have been deleted")
 		}
+	}
+}
+func createTestDatabase(t *testing.T, table string) string {
+	t.Helper()
+
+	tmpfile, err := os.CreateTemp("", "multi*.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpfile.Close()
+
+	sqlDB, err := sql.Open("sqlite3", tmpfile.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqlDB.Close()
+
+	if _, err := sqlDB.Exec("CREATE TABLE " + table + " (id INTEGER PRIMARY KEY)"); err != nil {
+		t.Fatal(err)
+	}
+
+	return tmpfile.Name()
+}
+
+func setupMultiDBTest(t *testing.T) (*Handler, []string) {
+	t.Helper()
+
+	first := createTestDatabase(t, "users")
+	second := createTestDatabase(t, "products")
+
+	databases, err := db.NewManager([]string{first, second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		databases.Close()
+		os.Remove(first)
+		os.Remove(second)
+	})
+
+	return newTestHandler(databases), []string{filepath.Base(first), filepath.Base(second)}
+}
+
+func getTablesFrom(t *testing.T, router http.Handler, path string, headers map[string]string) []models.Table {
+	t.Helper()
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", path, nil)
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected status %d for %s, got %d", http.StatusOK, path, w.Code)
+	}
+
+	var response struct {
+		Tables []models.Table `json:"tables"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	return response.Tables
+}
+
+func TestListDatabases(t *testing.T) {
+	handler, names := setupMultiDBTest(t)
+	router := handler.SetupRoutes()
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/databases", nil)
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	var response struct {
+		Databases []models.DatabaseInfo `json:"databases"`
+		Default   string                `json:"default"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(response.Databases) != 2 {
+		t.Fatalf("Expected 2 databases, got %d", len(response.Databases))
+	}
+	if response.Default != names[0] {
+		t.Errorf("Expected default database %q, got %q", names[0], response.Default)
+	}
+	if !response.Databases[0].Default || response.Databases[1].Default {
+		t.Error("Expected only the first database to be the default")
+	}
+	if response.Databases[1].Name != names[1] {
+		t.Errorf("Expected second database name %q, got %q", names[1], response.Databases[1].Name)
+	}
+}
+
+func TestDatabaseSelection(t *testing.T) {
+	handler, names := setupMultiDBTest(t)
+	router := handler.SetupRoutes()
+
+	tables := getTablesFrom(t, router, "/api/tables", nil)
+	if len(tables) != 1 || tables[0].Name != "users" {
+		t.Errorf("Expected default database to expose 'users', got %v", tables)
+	}
+
+	tables = getTablesFrom(t, router, "/api/tables?db="+names[1], nil)
+	if len(tables) != 1 || tables[0].Name != "products" {
+		t.Errorf("Expected %s to expose 'products', got %v", names[1], tables)
+	}
+
+	tables = getTablesFrom(t, router, "/api/tables", map[string]string{DatabaseHeader: names[1]})
+	if len(tables) != 1 || tables[0].Name != "products" {
+		t.Errorf("Expected %s header selection to expose 'products', got %v", DatabaseHeader, tables)
+	}
+}
+
+func TestDatabaseSelectionInfo(t *testing.T) {
+	handler, names := setupMultiDBTest(t)
+	router := handler.SetupRoutes()
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/info?db="+names[1], nil)
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	var info models.DatabaseInfo
+	if err := json.Unmarshal(w.Body.Bytes(), &info); err != nil {
+		t.Fatal(err)
+	}
+	if info.Name != names[1] {
+		t.Errorf("Expected info for %q, got %q", names[1], info.Name)
+	}
+	if info.Default {
+		t.Error("Expected non-default database to report default=false")
+	}
+}
+
+func TestUnknownDatabase(t *testing.T) {
+	handler, _ := setupMultiDBTest(t)
+	router := handler.SetupRoutes()
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/tables?db=missing.db", nil)
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("Expected status %d, got %d", http.StatusNotFound, w.Code)
 	}
 }

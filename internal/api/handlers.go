@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/csv"
+	"errors"
 	"io/fs"
 	"net/http"
 	"sqliter/internal/db"
@@ -13,17 +14,72 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const (
+	databaseContextKey     = "sqliter.database"
+	databaseNameContextKey = "sqliter.databaseName"
+	// DatabaseHeader lets clients select a database without a query parameter.
+	DatabaseHeader = "X-SQLiter-Database"
+)
+
 type Handler struct {
-	db        *db.SQLiteDB
+	databases *db.Manager
 	staticFS  fs.FS
 }
 
-func NewHandler(database *db.SQLiteDB, staticFS fs.FS) *Handler {
-	return &Handler{db: database, staticFS: staticFS}
+func NewHandler(databases *db.Manager, staticFS fs.FS) *Handler {
+	return &Handler{databases: databases, staticFS: staticFS}
+}
+
+// ListDatabases returns every database the server has open.
+func (h *Handler) ListDatabases(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"databases": h.databases.List(),
+		"default":   h.databases.DefaultName(),
+	})
+}
+
+// resolveDatabase selects the database for a request from the "db" query
+// parameter or the X-SQLiter-Database header, falling back to the default.
+func (h *Handler) resolveDatabase(c *gin.Context) {
+	name := c.Query("db")
+	if name == "" {
+		name = c.GetHeader(DatabaseHeader)
+	}
+
+	database, err := h.databases.Get(name)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, db.ErrDatabaseNotFound) {
+			status = http.StatusNotFound
+		}
+		c.AbortWithStatusJSON(status, gin.H{"error": err.Error()})
+		return
+	}
+
+	info, err := h.databases.Info(name)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.Set(databaseContextKey, database)
+	c.Set(databaseNameContextKey, info.Name)
+	c.Next()
+}
+
+func databaseFrom(c *gin.Context) *db.SQLiteDB {
+	database, _ := c.MustGet(databaseContextKey).(*db.SQLiteDB)
+	return database
+}
+
+func databaseNameFrom(c *gin.Context) string {
+	value, _ := c.Get(databaseNameContextKey)
+	name, _ := value.(string)
+	return name
 }
 
 func (h *Handler) GetDatabaseInfo(c *gin.Context) {
-	info, err := h.db.GetDatabaseInfo()
+	info, err := h.databases.Info(databaseNameFrom(c))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -33,7 +89,7 @@ func (h *Handler) GetDatabaseInfo(c *gin.Context) {
 }
 
 func (h *Handler) GetTables(c *gin.Context) {
-	tables, err := h.db.GetTables()
+	tables, err := databaseFrom(c).GetTables()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -49,7 +105,7 @@ func (h *Handler) GetTableSchema(c *gin.Context) {
 		return
 	}
 
-	columns, err := h.db.GetTableSchema(tableName)
+	columns, err := databaseFrom(c).GetTableSchema(tableName)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -89,7 +145,7 @@ func (h *Handler) GetTableData(c *gin.Context) {
 		return
 	}
 
-	data, err := h.db.GetTableData(tableName, limit, offset, sortColumn, sortDirection, whereClause)
+	data, err := databaseFrom(c).GetTableData(tableName, limit, offset, sortColumn, sortDirection, whereClause)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -111,7 +167,7 @@ func (h *Handler) InsertRow(c *gin.Context) {
 		return
 	}
 
-	if err := h.db.InsertRow(tableName, req.Data); err != nil {
+	if err := databaseFrom(c).InsertRow(tableName, req.Data); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -132,7 +188,7 @@ func (h *Handler) UpdateRow(c *gin.Context) {
 		return
 	}
 
-	if err := h.db.UpdateRow(tableName, req.Data, req.Where); err != nil {
+	if err := databaseFrom(c).UpdateRow(tableName, req.Data, req.Where); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -153,7 +209,7 @@ func (h *Handler) DeleteRow(c *gin.Context) {
 		return
 	}
 
-	if err := h.db.DeleteRow(tableName, req.Where); err != nil {
+	if err := databaseFrom(c).DeleteRow(tableName, req.Where); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -173,7 +229,7 @@ func (h *Handler) ExecuteSQL(c *gin.Context) {
 		return
 	}
 
-	result, err := h.db.ExecuteSQL(req.SQL)
+	result, err := databaseFrom(c).ExecuteSQL(req.SQL)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -204,7 +260,7 @@ func (h *Handler) ExportTableCSV(c *gin.Context) {
 	writer := csv.NewWriter(&buf)
 
 	// Export data to CSV
-	if err := h.db.ExportTableCSV(tableName, sortColumn, sortDirection, whereClause, writer); err != nil {
+	if err := databaseFrom(c).ExportTableCSV(tableName, sortColumn, sortDirection, whereClause, writer); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -273,7 +329,10 @@ func (h *Handler) SetupRoutes() *gin.Engine {
 		c.Data(http.StatusOK, "text/html", data)
 	})
 
+	r.GET("/api/databases", h.ListDatabases)
+
 	api := r.Group("/api")
+	api.Use(h.resolveDatabase)
 	{
 		api.GET("/info", h.GetDatabaseInfo)
 		api.GET("/tables", h.GetTables)

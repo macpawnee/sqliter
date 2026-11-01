@@ -1,0 +1,10 @@
+{
+  "servers": {
+    "cvc": {
+      "command": "cvc",
+      "args": [
+        "mcp"
+      ]
+    }
+  }
+}

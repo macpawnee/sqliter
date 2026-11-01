@@ -10,6 +10,7 @@ A powerful web-based SQLite database editor with a Go backend and React frontend
 - **Web-based Interface**: Modern, responsive UI built with React and Tailwind CSS
 - **Single Executable**: Self-contained application with embedded frontend assets
 - **Database Connection**: Connect to any SQLite database file
+- **Multiple Databases**: Serve several database files at once and switch between them from the header
 - **Table Browsing**: Sidebar navigation showing all tables in the database
 
 ### Full CRUD Operations
@@ -92,6 +93,9 @@ docker build -t sqliter .
 
 # Run with your database
 docker run -p 2826:2826 -v /path/to/your/database.db:/data/database.db sqliter --db /data/database.db
+
+# Run with multiple databases (repeat the flag or mount a directory)
+docker run -p 2826:2826 -v /path/to/databases:/data sqliter --db /data/one.db --db /data/two.db
 ```
 
 ### Building from Source
@@ -102,6 +106,10 @@ task build
 
 # Run with your database
 ./sqliter --db example.db
+
+# Run with multiple databases
+./sqliter --db example.db --db test.db
+./sqliter --db example.db,test.db
 ```
 
 ### Manual Build Steps
@@ -129,10 +137,34 @@ go build -o sqliter ./cmd/main.go
 Once running, open your browser to `http://localhost:2826` (or whatever port you specified).
 
 ### Interface Overview
-- **Header**: Shows database filename and application title
+- **Header**: Database switcher (when more than one database is served) and application title
 - **Left Sidebar**: Lists all tables in the database with change indicators
 - **Main Area**: Table contents with full editing capabilities
 - **SQL Editor**: Accessible via navigation for custom queries
+
+### Multiple Databases
+
+SQLiter accepts any number of SQLite files. Pass the `--db` flag once per file, use a
+comma-separated list, or simply list the files as arguments:
+
+```bash
+./sqliter --db example.db --db test.db
+./sqliter --db example.db,test.db
+./sqliter example.db test.db
+```
+
+Flags may appear before or after the file names, so `./sqliter one.db two.db --port 9000`
+works as well. A leading `~` in a path is expanded to your home directory, which matters for
+lists like `--db ~/one.db,~/two.db` where the shell only expands the first tilde.
+
+Each database is listed by its file name in the header dropdown. The first database is
+the default; the selection is remembered in the browser and every request is scoped to
+it, so tables, rows, SQL queries and CSV exports always target the selected file.
+Duplicate base names are disambiguated with a numeric suffix (`data.db`, `data-2.db`).
+
+On the API side, select a database with the `db` query parameter (or the
+`X-SQLiter-Database` header), for example `GET /api/tables?db=test.db`.
+`GET /api/databases` lists every configured database and marks the default one.
 
 ### Working with Data
 1. **Viewing Data**: Select any table from the sidebar to view its contents

@@ -1,21 +1,53 @@
 import axios from 'axios';
-import { Table, Column, TableData, InsertRequest, UpdateRequest, DeleteRequest, DatabaseInfo } from './types';
+import {
+  Table,
+  Column,
+  TableData,
+  InsertRequest,
+  UpdateRequest,
+  DeleteRequest,
+  DatabaseInfo,
+  DatabasesResponse,
+  SQLQueryResult,
+} from './types';
 
 const API_BASE = '/api';
 
+let currentDatabase: string | null = null;
+
+// All requests are scoped to this database; the server falls back to its
+// default database when it is not set.
+export const setCurrentDatabase = (name: string | null) => {
+  currentDatabase = name;
+};
+
+const client = axios.create({ baseURL: API_BASE });
+
+client.interceptors.request.use((config) => {
+  if (currentDatabase) {
+    config.params = { ...(config.params || {}), db: currentDatabase };
+  }
+  return config;
+});
+
 export const api = {
+  async getDatabases(): Promise<DatabasesResponse> {
+    const response = await axios.get(`${API_BASE}/databases`);
+    return response.data;
+  },
+
   async getDatabaseInfo(): Promise<DatabaseInfo> {
-    const response = await axios.get(`${API_BASE}/info`);
+    const response = await client.get('/info');
     return response.data;
   },
 
   async getTables(): Promise<Table[]> {
-    const response = await axios.get(`${API_BASE}/tables`);
+    const response = await client.get('/tables');
     return response.data.tables;
   },
 
   async getTableSchema(tableName: string): Promise<Column[]> {
-    const response = await axios.get(`${API_BASE}/tables/${tableName}/schema`);
+    const response = await client.get(`/tables/${tableName}/schema`);
     return response.data.columns;
   },
 
@@ -28,7 +60,7 @@ export const api = {
     if (whereClause) {
       params.where_clause = whereClause;
     }
-    const response = await axios.get(`${API_BASE}/tables/${tableName}/data`, {
+    const response = await client.get(`/tables/${tableName}/data`, {
       params
     });
     return response.data;
@@ -36,17 +68,22 @@ export const api = {
 
   async insertRow(tableName: string, data: Record<string, any>): Promise<void> {
     const request: InsertRequest = { data };
-    await axios.post(`${API_BASE}/tables/${tableName}/rows`, request);
+    await client.post(`/tables/${tableName}/rows`, request);
   },
 
   async updateRow(tableName: string, data: Record<string, any>, where: Record<string, any>): Promise<void> {
     const request: UpdateRequest = { data, where };
-    await axios.put(`${API_BASE}/tables/${tableName}/rows`, request);
+    await client.put(`/tables/${tableName}/rows`, request);
   },
 
   async deleteRow(tableName: string, where: Record<string, any>): Promise<void> {
     const request: DeleteRequest = { where };
-    await axios.delete(`${API_BASE}/tables/${tableName}/rows`, { data: request });
+    await client.delete(`/tables/${tableName}/rows`, { data: request });
+  },
+
+  async executeSQL(sql: string): Promise<SQLQueryResult> {
+    const response = await client.post('/sql/execute', { sql });
+    return response.data;
   },
 
   async exportTableCSV(tableName: string, sortColumn?: string, sortDirection?: 'asc' | 'desc', whereClause?: string): Promise<Blob> {
@@ -58,7 +95,7 @@ export const api = {
     if (whereClause) {
       params.where_clause = whereClause;
     }
-    const response = await axios.get(`${API_BASE}/tables/${tableName}/export/csv`, {
+    const response = await client.get(`/tables/${tableName}/export/csv`, {
       params,
       responseType: 'blob'
     });
