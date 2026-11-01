@@ -132,6 +132,27 @@ go build -o sqliter ./cmd/main.go
 ./sqliter --db your-database.db
 ```
 
+## 🚀 Deploying with PM2
+
+[ecosystem.config.cjs](ecosystem.config.cjs) runs the compiled `sqliter` binary under PM2.
+It reads [.env](.env) with Node's built-in `process.loadEnvFile`, so **no `dotenv`
+package is required** (an older copy of this config printed `dotenv load failed`
+because it called `require('dotenv')` in a repo that has no Node dependencies).
+
+```bash
+# .env
+APP_NAME=sqliter
+PORT=2826
+SQLITER_DATABASES=./example.db,./test.db   # comma-separated, each becomes --db
+```
+
+```bash
+deploy.sh   # git pull, build frontend + binary, back up databases, restart PM2
+```
+
+The PM2 app launches with `interpreter: 'none'`, since `./sqliter` is a Go binary
+rather than a Node script.
+
 ## 📖 Usage
 
 Once running, open your browser to `http://localhost:2826` (or whatever port you specified).

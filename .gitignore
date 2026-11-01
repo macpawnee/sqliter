@@ -1,3 +1,4 @@
+.env
 .idea
 sqliter
 node_modules/
@@ -6,3 +7,4 @@ dist/
 /.task/checksum/build-backend
 /.task/checksum/build-frontend
 cmd/web/
+backups/
